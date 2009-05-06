@@ -21,4 +21,4 @@ TODO :
 - refine API
 
 LICENSE :
-BSD "don't sue me style"
+GPL as mod_muc on which the code is based on.
