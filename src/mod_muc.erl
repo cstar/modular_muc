@@ -113,7 +113,7 @@ room_destroyed(Host, Room, Pid, ServerHost) ->
 create_room(Host, Name, From, Nick, Opts, Handler) ->
     Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
     gen_server:call(Proc, {create, Name, From, Nick, Opts, Handler}).
-    
+     
 create_room(Host, Name, From, Nick, Opts) ->
     Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
     gen_server:call(Proc, {create, Name, From, Nick, Opts}).
@@ -176,7 +176,6 @@ can_use_nick(Host, JID, Nick) ->
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
 init([Host, Opts]) ->
-
 	Storage = gen_mod:get_opt(storage, Opts, muc_storage_default),
 	DefaultHandler = gen_mod:get_opt(default_handler, Opts, muc_room_default),
 	Handlers = gen_mod:get_opt(handlers, Opts, [muc_room_default]),
@@ -246,8 +245,6 @@ handle_call({create, Room, From, Nick, Opts, Handler},
 		   default_room_opts = DefOpts,
 		   history_size = HistorySize,
 		   room_shaper = RoomShaper,
-		   handlers = Handler,
-		   default_handler = DefHandler,
 		   storage = Storage } = State) ->
     ?DEBUG("MUC: create new room '~s'~n", [Room]),
     NewOpts = case Opts of
