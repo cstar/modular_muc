@@ -1,0 +1,59 @@
+@author Eric Cestari
+@version 0.4.0
+@title Modular Multi User Chat
+@doc Enable custom chatroom with custom handlers for processing config, custom roles
+
+== Why ? ==
+
+=== Flexible handler ===
+
+MUC in the unsung hero for developping applications buses. Even more if they require user interaction.
+XEP-0045 sets some base roles for chatting with the default roles and affiliations.
+
+But using MUC for playing chess (for example) will require different affiliations and message routing should be flexible given a specific role.
+
+<a href="http://metajack.im/2008/11/25/chesspark-design-details-part-3-game-design/">Jack Moffitt explains the game design</a> of <a href="http://chesspark.com">ChessPark</a> :
+
+
+    " Another issue is that people watching chess games want to discuss the moves, potential tactics, and future plans. Players, however, are not allowed to receive advice or help from anyone, so if they can see the chat of watchers, then there is a real problem.
+
+    We solved this by making roles affect who sees chat messages. In a chess game room, players can send messages and these messages are seen by everyone in the room. Regular participants can also talk, but only other regular participants can see their messages. A player never sees any chat from an observer during a game. Once a game is over, the players can see the observers' chat messages. "
+    
+ChessPark decided to write its own MUC, Palaver, with twisted, and custom roles.
+
+But ejabberd's mod_muc already has all the tools to make that happen. It just lacks the flexibility.
+
+=== Modular storage ===
+
+Default storage is mnesia with {@link muc_storage_default}. But why stop here. You may want to store your persistent room data in S3 or in a RDBMS or CouchDB.
+
+That's easy, just write the CRUD operations in a muc_storage_thing, declare in ejabberd.cfg as storage.
+
+=== flexible handler ===
+
+XEP-0045 defines good practice for how to handle multi user chat between human beings. But as stated previously, it may define too much or not enough for other uses.
+
+There's a {@link minimal_muc} included here. the bare minimun for running a chatroom. Recommended development use is to copy this file, rename, and customize.
+
+
+== Architecture ==
+
+Two behaviours are defined : {@link gen_muc_storage} and {@link gen_muc_handler}.
+
+Several handlers can be defined. handler information is stored (if persistent) with the rest of the configuration data.
+
+== Example Configuration ==
+
+in ejabberd.cfg
+<pre>
+{mod_muc,      [{storage, s3_muc_storage},{s3_bucket, "chessgame"}, 
+                {default_handler, default}, {handlers, [default, session]},
+                {host, "chess.@HOST@"},
+                {access, subscriber},
+			    {access_create, paying_subscriber},
+			    {access_persistent, subscriber},
+			    {access_admin, chess_admin}]}
+</pre>
+
+Default configuration options of the base ejabberd mod_muc are available. Everything defaults to the XEP-0045 implementation with storage in mnesia.
+@end
