@@ -24,7 +24,7 @@ end
 
 desc "Copies beam files to ejabberd install in #{EJABBERD_TOP}"
 task :install => :build do
-  sh "cp ebin/*.beam #{EJABBED_TOP}/lib/ejabberd/ebin"
+  sh "cp ebin/*.beam #{EJABBERD_TOP}/lib/ejabberd/ebin"
 end
 
 desc "Generate documentation"
