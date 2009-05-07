@@ -5,10 +5,9 @@
 
 -behaviour(gen_muc_storage).
 
--record(muc_room, {name_host, type, opts}).
 -include("ejabberd.hrl").
 -include("jlib.hrl").
--include("mod_muc_room.hrl"). 
+-include("mod_muc.hrl"). 
 -export([init/3,
          store_room/5,
          restore_room/3,

@@ -1,0 +1,4 @@
+ebin/
+doc/
+erl_crash.dump
+erlang_config.rb

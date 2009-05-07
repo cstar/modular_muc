@@ -1,0 +1,1 @@
+-record(muc_room, {name_host, type, opts}).

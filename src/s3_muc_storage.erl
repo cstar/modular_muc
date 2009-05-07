@@ -7,10 +7,10 @@
 
 -behaviour(gen_muc_storage).
 
--record(muc_room, {name_host, type, opts}).
+
 -include("ejabberd.hrl").
 -include("jlib.hrl").
--include("mod_muc_room.hrl"). 
+-include("mod_muc.hrl"). 
 -export([init/3,
          store_room/5,
          restore_room/3,
@@ -37,10 +37,15 @@ init(_Host, _ServerHost, Opts)->
 % @doc Stores room.
 % Called on configuration change when MUC is persistent.  
 store_room(Host,ServerHost, Name, Type, Opts)->
-    ?DEBUG("store_room S3", []),
-    s3:write_object(get_bucket(), build_key(Host, Name), term_to_binary({Type, Opts}), "application/erlang").
+    Bucket = get_bucket(),
+    Key = build_key(Host, Name),
+    Data = {Type, Opts},
+    Res = s3:write_term(Bucket, Key, Data),
+    ?DEBUG("~p = s3:write_term(~p, ~p, ~p) ", [Res,Bucket, Key, Data]),
+    Res.
+    
 
-% @spec (Host,ServerHost, Name)-> Config
+% @spec (Host,ServerHost, Name)-> {Handler, Config}
 % @doc restores room from storage
 restore_room(Host,ServerHost, Name)->
     ?DEBUG("restore_room S3", []),
@@ -61,16 +66,17 @@ forget_room(Host, ServerHost, Name) ->
 % @doc Used for disco
 fetch_all_rooms(ServerHost, Host)->
     ?DEBUG("fetch_all_rooms muc_s3", []),
-    case s3:get_objects(get_bucket(),[{prefix,"muc@"++Host}] ) of
+    case s3:get_objects(get_bucket(),[{prefix,build_key(Host,"")}] ) of
 	{'EXIT', Reason} ->
 	    ?ERROR_MSG("~p", [Reason]),
 	    [];
 	{error, timeout} ->
 	    ?ERROR_MSG("Timeout on S3", []),
 	    [];
-	{ok, Rs}->
-	    lists:map(fun({Key, Value})->
-	        #muc_room{name_host = split_key(Key), opts=binary_to_term(list_to_binary(Value))}
+	Rs->
+	    lists:map(fun({Key, Value, Headers})->
+	        {Type, Opts} = binary_to_term(list_to_binary(Value)),
+	        #muc_room{name_host = split_key(Key), opts=Opts, type=Type}
 	    end, Rs)
 	end.
     

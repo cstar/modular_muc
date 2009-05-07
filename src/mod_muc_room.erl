@@ -72,7 +72,7 @@
 -include("jlib.hrl").
 -include("mod_muc_room.hrl").
 
--define(DEFAULT_HANDLER, muc_room_default).
+-define(DEFAULT_HANDLER, minimal_muc).
 
 -define(DBGFSM, true).
 
@@ -168,8 +168,8 @@ init([Host, ServerHost, Access, Room, HistorySize, RoomShaper, Opts, Handler, St
 				  room_shaper = Shaper},
     case handler_call(init, [Opts], State) of
         {result, ok, State1}->
-            ?INFO_MSG("Fetched MUC room ~s@~s (Handler ~s)", 
-	            [Room, Host, Handler]),
+            ?INFO_MSG("Fetched MUC room ~s@~s (State ~s)", 
+	            [Room, Host, Opts]),
 	        {ok, normal_state, State1};
         {error, Why, State1}->
             ?ERROR_MSG("Handler ~p returned an error for ~p : ~p",[Handler, Room, Why]),
@@ -2299,12 +2299,12 @@ handler_call(Function, Args, State, Handler) when is_record(State, state) ->
 	Result -> {result, Result, State}
     end.
 maybe_persist(_Handler, O, O) -> ok; %No change
-maybe_persist(Handler, O, N) ->
+maybe_persist(Handler, O, #headers{storage=S}=N) ->
     case {catch Handler:is_persistent(O), catch Handler:is_persistent(N), O /= N} of
 	{_, true, true} ->
-	    mod_muc:store_room(N#headers.server_host, N#headers.host, N#headers.room, Handler, Handler:make_opts(N));
+	    S:store_room(N#headers.server_host, N#headers.host, N#headers.room, Handler, Handler:make_opts(N));
 	{true, false, _} ->
-	    mod_muc:forget_room(N#headers.server_host, N#headers.host, N#headers.room);
+	    S:forget_room(N#headers.server_host, N#headers.host, N#headers.room);
 	{_, _, _} ->
 	    ok
     end.

@@ -106,6 +106,8 @@
 		 logging = false,
 		 custom = []
 		}).
+		
+
 %% @type user() = #user{
 %%          jid=jid(),
 %%          nick=string(),

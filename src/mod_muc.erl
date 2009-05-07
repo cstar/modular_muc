@@ -49,9 +49,8 @@
 
 -include("ejabberd.hrl").
 -include("jlib.hrl").
+-include("mod_muc.hrl").
 
-
--record(muc_room, {name_host, opts}).
 -record(muc_online_room, {name_host, pid}).
 -record(muc_registered, {us_host, nick}).
 
@@ -520,8 +519,7 @@ do_route1(Host, ServerHost, Access, HistorySize, RoomShaper,
 
 load_permanent_rooms(Host, ServerHost, Access, HistorySize, RoomShaper, Storage) ->
 	lists:foreach(
-	  fun({Handler, R }) ->
-	      {Room, Host} = R#muc_room.name_host,
+	  fun(#muc_room{type=Handler, name_host={Room, _Host}, opts=Opts}) ->
 	      case mnesia:dirty_read(muc_online_room, {Room, Host}) of
 		  [] ->
 		      {ok, Pid} = mod_muc_room:start(
@@ -531,7 +529,7 @@ load_permanent_rooms(Host, ServerHost, Access, HistorySize, RoomShaper, Storage)
 				    Room,
 				    HistorySize,
 				    RoomShaper,
-				    R#muc_room.opts,
+				    Opts,
 				    Handler,
 				    Storage),
 		      register_room(Host, Room, Pid);

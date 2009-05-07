@@ -467,6 +467,7 @@ is_visitor(Jid, Headers) ->
 	Opt -> Headers#headers{config = (Headers#headers.config)#config{Opt = Val}}).
 
 set_opts([], Headers) ->
+    ?DEBUG("Headers after applying opts : ~p", [Headers]),
     Headers;
 set_opts([{Opt, Val} | Opts], Headers) ->
     NH = case Opt of
