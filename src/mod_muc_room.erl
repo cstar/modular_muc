@@ -149,7 +149,7 @@ init([Host, ServerHost, Access, Room, HistorySize, RoomShaper, Creator, Nick, De
             ?INFO_MSG("Created MUC room ~s@~s by ~s", 
 	            [Room, Host, jlib:jid_to_string(Creator)]),
 	        {ok, normal_state, State1};
-        {error, Why, State1}->
+        {error, Why, _State1}->
             ?ERROR_MSG("Handler ~p returned an error for ~p : ~p",[Handler, Room, Why]),
             {stop, Why}
     end;
@@ -168,10 +168,10 @@ init([Host, ServerHost, Access, Room, HistorySize, RoomShaper, Opts, Handler, St
 				  room_shaper = Shaper},
     case handler_call(init, [Opts], State) of
         {result, ok, State1}->
-            ?INFO_MSG("Fetched MUC room ~s@~s (State ~s)", 
-	            [Room, Host, Opts]),
+            ?INFO_MSG("Fetched MUC room ~s@~s ", 
+	            [Room, Host]),
 	        {ok, normal_state, State1};
-        {error, Why, State1}->
+        {error, Why, _State1}->
             ?ERROR_MSG("Handler ~p returned an error for ~p : ~p",[Handler, Room, Why]),
             {stop, Why}
     end.
@@ -2292,7 +2292,10 @@ handler_call(Function, Args, State, Handler) when is_record(State, state) ->
 	{'EXIT', Reason} -> {error, Reason, State};
 	{Return, Result} -> {Return, Result, State};
 	{Return, Result, NewHeaders}-> 
-	    maybe_persist(State#state.handler, Headers, NewHeaders),
+	    if Function /= init -> %% do not store on init.
+	        maybe_persist(State#state.handler, Headers, NewHeaders);
+	      true -> ok
+	    end,
 	    {Return, Result, headers_to_state(NewHeaders, State)};
 	NewHeaders when is_record(NewHeaders, headers) ->
 	    headers_to_state(NewHeaders, State);

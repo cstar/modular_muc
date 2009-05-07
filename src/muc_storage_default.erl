@@ -47,7 +47,8 @@ forget_room(Host, _ServerHost, Name) ->
 	end,
     mnesia:transaction(F).
 
-fetch_all_rooms(_ServerHost, Host)->
+fetch_all_rooms( Host, _ServerHost)->
+    ?DEBUG("fetch_all_rooms muc_default", []),
     case catch mnesia:dirty_select(
 		 muc_room, [{#muc_room{name_host = {'_', Host}, _ = '_'},
 			     [],
@@ -55,7 +56,9 @@ fetch_all_rooms(_ServerHost, Host)->
 	    {'EXIT', Reason} ->
 	        ?ERROR_MSG("~p", [Reason]),
 	        [];
-	    Rs -> Rs
+	    Rs ->
+	        ?DEBUG("~p", [Rs]),
+	        Rs
     end.
     
 

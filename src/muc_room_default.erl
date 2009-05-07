@@ -145,8 +145,7 @@ is_password_protected(#headers{config = Config})->
 
 can_get_affiliations(_UserInfo, admin, _Headers)-> true;
 can_get_affiliations(_UserInfo, owner, _Headers)-> true;
-can_get_affiliations(_, FAff, _ ) -> 
-    ?DEBUG("Affiliation : ~p",[FAff]),false.
+can_get_affiliations(_, _FAff, _ ) -> false.
  
 can_get_full_jids(Info, Headers)->
     (Info#user.role == moderator) orelse ((Headers#headers.config)#config.anonymous == false).
@@ -466,9 +465,7 @@ is_visitor(Jid, Headers) ->
 -define(CASE_CONFIG_OPT(Opt),
 	Opt -> Headers#headers{config = (Headers#headers.config)#config{Opt = Val}}).
 
-set_opts([], Headers) ->
-    ?DEBUG("Headers after applying opts : ~p", [Headers]),
-    Headers;
+set_opts([], Headers) -> Headers;
 set_opts([{Opt, Val} | Opts], Headers) ->
     NH = case Opt of
 	      ?CASE_CONFIG_OPT(title);
@@ -816,7 +813,7 @@ process_changed_ra(JID, affiliation, none, Reason, Headers)->
 		_ ->
 			Headers1 = mod_muc_room:set_affiliation(JID, none, Headers),
 			mod_muc_room:send_update_presence(JID,"", Headers1),
-			?DEBUG("GET AFFILIATION : ~p", [mod_muc_room:set_affiliation(JID, none, Headers1)]),
+			mod_muc_room:set_affiliation(JID, none, Headers1),
 			Headers1
 	end;
 process_changed_ra(JID, affiliation, outcast, Reason, Headers)->

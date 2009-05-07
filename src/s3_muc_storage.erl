@@ -41,7 +41,6 @@ store_room(Host,ServerHost, Name, Type, Opts)->
     Key = build_key(Host, Name),
     Data = {Type, Opts},
     Res = s3:write_term(Bucket, Key, Data),
-    ?DEBUG("~p = s3:write_term(~p, ~p, ~p) ", [Res,Bucket, Key, Data]),
     Res.
     
 
@@ -61,10 +60,10 @@ forget_room(Host, ServerHost, Name) ->
     ?DEBUG("forget_room muc_s3", []),
      s3:delete_object(get_bucket(), build_key(Host, Name)).
 
-% @spec (ServerHost, Host)-> [MucRoom]
+% @spec (Host,ServerHost)-> [MucRoom]
 %   MucRoom = #muc_room{}
 % @doc Used for disco
-fetch_all_rooms(ServerHost, Host)->
+fetch_all_rooms(Host, ServerHost)->
     ?DEBUG("fetch_all_rooms muc_s3", []),
     case s3:get_objects(get_bucket(),[{prefix,build_key(Host,"")}] ) of
 	{'EXIT', Reason} ->

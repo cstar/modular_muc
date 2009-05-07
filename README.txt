@@ -7,7 +7,7 @@ It is still very very rough. I'd love input/patches from you guys
 
 BUILDING :
 
-Run rake twice : a first time for specifying location of erlang and ejabberd
+Run rake twice : a first time for specifying location of erlang and ejabberd in generated erlang_config.rb
 second time for actually building.
 
 DOCUMENTATION :
