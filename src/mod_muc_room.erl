@@ -1005,10 +1005,9 @@ process_presence(From, Nick, {xmlelement, "presence", Attrs, _Els} = Packet,
 	    _ ->
 		StateData
 	end,
-    case (not is_persistent(StateData1)) andalso
-	(?DICT:to_list(StateData1#state.users) == []) of
+    case (?DICT:to_list(StateData1#state.users) == []) of
 	true ->
-	    ?INFO_MSG("Destroyed MUC room ~s because it's temporary and empty", 
+	    ?INFO_MSG("Destroyed MUC room ~s because it's empty", 
 		      [jlib:jid_to_string(StateData#state.jid)]),
 	    {stop, normal, StateData1};
 	_ ->

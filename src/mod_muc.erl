@@ -40,7 +40,7 @@
 	 forget_room/3,
 	 create_room/5,
 	 create_room/6,
-	 process_iq_disco_items/4,
+	 process_iq_disco_items/6,
 	 can_use_nick/3]).
 
 %% gen_server callbacks
@@ -133,12 +133,12 @@ forget_room(ServerHost,Host, Name) ->
     H = get_storage(ServerHost),
     H:forget_room(Host,ServerHost, Name).
 
-process_iq_disco_items(Host, From, To, #iq{lang = Lang} = IQ) ->
+process_iq_disco_items(Host, ServerHost, From, To, #iq{lang = Lang} = IQ, Storage) ->
     Rsm = jlib:rsm_decode(IQ),
     Res = IQ#iq{type = result,
 		sub_el = [{xmlelement, "query",
 			   [{"xmlns", ?NS_DISCO_ITEMS}],
-			   iq_disco_items(Host, From, Lang, Rsm)}]},
+			   iq_disco_items(Host, ServerHost, From, Lang, Rsm, Storage)}]},
     ejabberd_router:route(To,
 			  From,
 			  jlib:iq_to_xml(Res)).
@@ -201,10 +201,10 @@ init([Host, Opts]) ->
     ejabberd_router:register_route(MyHost),
     case Storage:init(Host, MyHost, Opts) of
         ok -> 
-            load_permanent_rooms(MyHost, Host,
-	        		 {Access, AccessCreate, AccessAdmin, AccessPersistent},
-	        		 HistorySize,
-	        		 RoomShaper, Storage),
+            %load_permanent_rooms(MyHost, Host,
+	        %		 {Access, AccessCreate, AccessAdmin, AccessPersistent},
+	        %		 HistorySize,
+	        %		 RoomShaper, Storage),
             {ok, #state{host = MyHost,
 	        	server_host = Host,
 	        	access = {Access, AccessCreate, AccessAdmin, AccessPersistent},
@@ -384,7 +384,7 @@ do_route1(Host, ServerHost, Access, HistorySize, RoomShaper,
 				    xmlns = ?NS_DISCO_ITEMS} = IQ ->
 				    spawn(?MODULE,
 					  process_iq_disco_items,
-					  [Host, From, To, IQ]);
+					  [Host, ServerHost, From, To, IQ, Storage]);
 				#iq{type = get,
 				    xmlns = ?NS_REGISTER = XMLNS,
 				    lang = Lang,
@@ -475,29 +475,46 @@ do_route1(Host, ServerHost, Access, HistorySize, RoomShaper,
 		    end
 	    end;
 	_ ->
-
 	    case mnesia:dirty_read(muc_online_room, {Room, Host}) of
-		[] ->
+		[] ->		    
 		    Type = xml:get_attr_s("type", Attrs),
 		    case {Name, Type} of
 			{"presence", ""} ->
-			    case acl:match_rule(ServerHost, AccessCreate, From) of
-				allow ->
-				    ?DEBUG("MUC: open new room '~s'~n", [Room]),
-				    {ok, Pid} = mod_muc_room:start(
-						  Host, ServerHost, Access,
-						  Room, HistorySize,
-						  RoomShaper, From,
-						  Nick, DefRoomOpts, Handler, Storage),
-				    register_room(Host, Room, Pid),
-				    mod_muc_room:route(Pid, From, Nick, Packet),
-				    ok;
-				_ ->
-				    Lang = xml:get_attr_s("xml:lang", Attrs),
-				    ErrText = "Room creation is denied by service policy",
-				    Err = jlib:make_error_reply(
-					    Packet, ?ERRT_FORBIDDEN(Lang, ErrText)),
-				    ejabberd_router:route(To, From, Err)
+			    case Storage:restore_room(Host, ServerHost, Room) of
+		        {Handler, Opts} ->
+		            ?DEBUG("MUC: Restoring room '~s'~n", [Room]),
+		            {ok, Pid} = mod_muc_room:start(
+				        Host,
+				        ServerHost,
+				        Access,
+				        Room,
+				        HistorySize,
+				        RoomShaper,
+				        Opts,
+				        Handler,
+				        Storage),
+		            register_room(Host, Room, Pid),
+		            mod_muc_room:route(Pid, From, Nick, Packet),
+		            ok;
+		        error ->
+			        case acl:match_rule(ServerHost, AccessCreate, From) of
+				    allow ->
+				        ?DEBUG("MUC: open new room '~s'~n", [Room]),
+				        {ok, Pid} = mod_muc_room:start(
+				    		  Host, ServerHost, Access,
+				    		  Room, HistorySize,
+				    		  RoomShaper, From,
+				    		  Nick, DefRoomOpts, Handler, Storage),
+				        register_room(Host, Room, Pid),
+				        mod_muc_room:route(Pid, From, Nick, Packet),
+				        ok;
+				    _ ->
+				        Lang = xml:get_attr_s("xml:lang", Attrs),
+				        ErrText = "Room creation is denied by service policy",
+				        Err = jlib:make_error_reply(
+				    	    Packet, ?ERRT_FORBIDDEN(Lang, ErrText)),
+				        ejabberd_router:route(To, From, Err)
+			        end
 			    end;
 			_ ->
 			    Lang = xml:get_attr_s("xml:lang", Attrs),
@@ -559,8 +576,11 @@ iq_disco_info(Lang) ->
      {xmlelement, "feature", [{"var", ?NS_VCARD}], []}].
 
 
-iq_disco_items(Host, From, Lang, none) ->
-    lists:zf(fun(#muc_online_room{name_host = {Name, _Host}, pid = Pid}) ->
+iq_disco_items(Host, ServerHost, From, Lang, none, Storage) ->
+    OnlineRooms = get_vh_rooms(Host),
+    PersistentRooms = Storage:fetch_room_names(Host, ServerHost),
+    lists:zf(
+        fun(#muc_online_room{name_host = {Name, _Host}, pid = Pid}) ->
 		     case catch gen_fsm:sync_send_all_state_event(
 				  Pid, {get_disco_item, From, Lang}, 100) of
 			 {ok, {item, Desc}} ->
@@ -571,10 +591,15 @@ iq_disco_items(Host, From, Lang, none) ->
 				{"name", Desc}], []}};
 			 _ ->
 			     false
-		     end
-	     end, get_vh_rooms(Host));
+		     end;
+		    ({Name, _Host})->
+		        {true,
+			      {xmlelement, "item",
+			       [{"jid", jlib:jid_to_string({Name, Host, ""})},
+				{"name", Name ++ "(0)"}], []}}
+	     end, OnlineRooms ++ PersistentRooms);
 
-iq_disco_items(Host, From, Lang, Rsm) ->
+iq_disco_items(Host,_ServerHost, From, Lang, Rsm, _Storage) ->
     {Rooms, RsmO} = get_vh_rooms(Host, Rsm),
     RsmOut = jlib:rsm_encode(RsmO),
     lists:zf(fun(#muc_online_room{name_host = {Name, _Host}, pid = Pid}) ->
@@ -591,6 +616,12 @@ iq_disco_items(Host, From, Lang, Rsm) ->
 		     end
 	     end, Rooms) ++ RsmOut.
 
+get_vh_rooms(Host) ->
+     mnesia:dirty_select(muc_online_room,
+			[{#muc_online_room{name_host = '$1', _ = '_'},
+			  [{'==', {element, 2, '$1'}, Host}],
+			  ['$_']}]).
+			  
 get_vh_rooms(Host, #rsm_in{max=M, direction=Direction, id=I, index=Index})->
     AllRooms = lists:sort(get_vh_rooms(Host)),
     Count = erlang:length(AllRooms),
@@ -775,12 +806,6 @@ broadcast_service_message(Host, Msg) ->
 	      gen_fsm:send_all_state_event(
 		Pid, {service_message, Msg})
       end, get_vh_rooms(Host)).
-
-get_vh_rooms(Host) ->
-    mnesia:dirty_select(muc_online_room,
-			[{#muc_online_room{name_host = '$1', _ = '_'},
-			  [{'==', {element, 2, '$1'}, Host}],
-			  ['$_']}]).
 
 
 clean_table_from_bad_node(Node) ->

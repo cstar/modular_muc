@@ -12,7 +12,7 @@
          store_room/5,
          restore_room/3,
          forget_room/3,
-         fetch_all_rooms/2
+         fetch_room_names/2
          ]).
          
 init(Host, _ServerHost, _Opts)->
@@ -46,8 +46,9 @@ forget_room(Host, _ServerHost, Name) ->
 		mnesia:delete({muc_room, {Name, Host}})
 	end,
     mnesia:transaction(F).
-
-fetch_all_rooms( Host, _ServerHost)->
+    
+    
+fetch_room_names( Host, _ServerHost)->
     ?DEBUG("fetch_all_rooms muc_default", []),
     case catch mnesia:dirty_select(
 		 muc_room, [{#muc_room{name_host = {'_', Host}, _ = '_'},
@@ -57,11 +58,11 @@ fetch_all_rooms( Host, _ServerHost)->
 	        ?ERROR_MSG("~p", [Reason]),
 	        [];
 	    Rs ->
-	        ?DEBUG("~p", [Rs]),
-	        Rs
+	        lists:map(fun(#muc_room{name_host = NameHost})->
+                NameHost
+	        end, Rs)
     end.
     
-
     
 %%%INTERNAL
 update_muc_room_table(Host) ->

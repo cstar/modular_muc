@@ -116,7 +116,12 @@ process_iq(UserInfo, FAffiliation, XMLNS, Type, Lang, SubEl,Headers)->{error, ?E
 process_presence(From, Packet, Nick,Lang,Headers)->{allow, Packet}.
 
 % FSM Processing
-
+handle_sync_event({get_disco_item, JID, Lang}, _From, Headers)->
+    Len = ?DICT:fold(fun(_, _, Acc) -> Acc + 1 end, 0,
+				 Headers#headers.users),
+	Tail = " (" ++ integer_to_list(Len) ++ ")",
+    {ok, {item, Headers#headers.room ++ Tail}, Headers};
+    
 handle_sync_event(Event, From,Headers)->ok.
 handle_info(Info,Headers)->ok.
 
