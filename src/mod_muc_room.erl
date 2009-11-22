@@ -557,6 +557,7 @@ handle_event({service_message, Msg}, _StateName, StateData) ->
       end,
       ?DICT:to_list(StateData#state.users)),
     NSD = add_message_to_history("",
+				 StateData#state.jid,
 				 MessagePkt,
 				 StateData),
     {next_state, normal_state, NSD};
@@ -600,11 +601,12 @@ handle_sync_event(get_config, _From, StateName, StateData) ->
     {reply, {ok, StateData#state.config}, StateName, StateData};
 handle_sync_event(get_state, _From, StateName, StateData) ->
     {reply, {ok, StateData}, StateName, StateData};
-%handle_sync_event({change_config, Config}, _From, StateName, #state{handler=Handler}=StateData) ->
-%    {result, [], NSD} = Handler:change_config(Config, StateData),
-%    {reply, {ok, NSD#state.config}, StateName, NSD};
 handle_sync_event({change_state, NewStateData}, _From, StateName, _StateData) ->
     {reply, {ok, NewStateData}, StateName, NewStateData};
+handle_sync_event({get_disco_item, JID, Lang}, _From,_StateName, StateData)->
+    UserInfo = get_user_info(JID, StateData),
+    Config = StateData#state.config,
+    handler_call(get_disco_item, [UserInfo, Lang,Config], StateData);
 handle_sync_event(Event, From, StateName, StateData) ->
     {Return,Values,NewState} = handler_call(handle_sync_event, [Event, From], StateData),
     {reply, {Return, Values}, StateName, NewState}.
@@ -702,11 +704,12 @@ handle_info(Info, StateName, StateData) ->
 %% Purpose: Shutdown the fsm
 %% Returns: any
 %%----------------------------------------------------------------------
-terminate(_Reason, _StateName, StateData) ->
+terminate(Reason, _StateName, StateData) ->
     ?DICT:fold(
        fun(J, _, _) ->
 	       tab_remove_online_user(J, StateData)
        end, [], StateData#state.users),
+    handler_call(room_destroyed, [Reason], StateData),
     mod_muc:room_destroyed(StateData#state.host, StateData#state.room, self(),
 			   StateData#state.server_host),
     ok.
@@ -738,7 +741,7 @@ process_groupchat_message(From, {xmlelement, "message", Attrs, _Els} = Packet,
 			      end,
 			      ?DICT:to_list(StateData1#state.users)),
 			    NewStateData3 =
-				add_message_to_history(FromNick,
+				add_message_to_history(FromNick, From,
 						       Packet2,
 						       StateData1),
 			    {next_state, normal_state, NewStateData3};
@@ -768,7 +771,7 @@ process_groupchat_message(From, {xmlelement, "message", Attrs, _Els} = Packet,
 					        ok
 					 end
 				end,?DICT:to_list(StateData1#state.users)),
-			    StateData2 = add_message_to_history(FromNick,
+			    StateData2 = add_message_to_history(FromNick, From,
 				    Packet2,
 				    StateData1),
 			    {next_state, normal_state, StateData2};
@@ -866,7 +869,9 @@ process_iq(UserInfo,Aff, ?NS_MUC_OWNER , set, Lang, SubEl, State) ->
 process_iq(UserInfo,Affiliation, ?NS_MUC_OWNER, get, Lang, _SubEl,State) ->
 	handler_call(get_config,[UserInfo, Affiliation, Lang], State);
 	
-	
+process_iq(UserInfo, Affiliation, ?NS_DISCO_INFO=XMLNS, get=Type, Lang, _SubEl, State) ->
+    handler_call(get_disco_info, [UserInfo, Lang, nil], State);
+    	
 process_iq(UserInfo, FAffiliation, XMLNS, Type, Lang, SubEl, State)->
     handler_call(process_iq, [UserInfo, FAffiliation, XMLNS, Type, Lang, SubEl], State).
 
@@ -919,6 +924,7 @@ process_presence(From, Nick, {xmlelement, "presence", Attrs, _Els} = Packet,
 				false -> "";
 				Status_el -> xml:get_tag_cdata(Status_el)
 			end,
+			handler_call(user_leaving, [From, Nick, Reason], NewState),
 			remove_online_user(From, NewState, Reason);
 		    _ ->
 			StateData
@@ -1005,10 +1011,9 @@ process_presence(From, Nick, {xmlelement, "presence", Attrs, _Els} = Packet,
 	    _ ->
 		StateData
 	end,
-    case (not is_persistent(StateData1)) andalso
-	(?DICT:to_list(StateData1#state.users) == []) of
+    case (?DICT:to_list(StateData1#state.users) == []) of
 	true ->
-	    ?INFO_MSG("Destroyed MUC room ~s because it's temporary and empty", 
+	    ?INFO_MSG("Destroyed MUC room ~s because it's empty", 
 		      [jlib:jid_to_string(StateData#state.jid)]),
 	    {stop, normal, StateData1};
 	_ ->
@@ -1809,7 +1814,6 @@ get_service_max_users(ServerHost) ->
 			   mod_muc, max_users, ?MAX_USERS_DEFAULT).
 
 
-
 count_stanza_shift(Nick, Els, StateData) ->
     HL = lqueue_to_list(StateData#state.history),
     Since = extract_history(Els, "since"),
@@ -1918,7 +1922,6 @@ extract_history([{xmlelement, _Name, Attrs, _SubEls} = El | Els], Type) ->
 extract_history([_ | Els], Type) ->
     extract_history(Els, Type).
 
-
 send_update_presence(JID, StateData) ->
     send_update_presence(JID, "", StateData).
 send_update_presence(JID, Reason, Headers) when is_record(Headers, headers)->
@@ -1986,7 +1989,7 @@ send_new_presence(NJID, Reason, StateData) ->
 			   false ->
 			       []
 		       end,
-	      Packet = append_subtags(
+	      Packet = xml:append_subtags(
 			 Presence,
 			 [{xmlelement, "x", [{"xmlns", ?NS_MUC_USER}],
 			   [{xmlelement, "item", ItemAttrs, ItemEls} | Status]}]),
@@ -1994,7 +1997,7 @@ send_new_presence(NJID, Reason, StateData) ->
 		jlib:jid_replace_resource(StateData#state.jid, Nick),
 		Info#user.jid,
 		Packet)
-      end, ?DICT:to_list(StateData#state.users)).
+    end, ?DICT:to_list(StateData#state.users)).
 
 
 send_existing_presences(ToJID,StateData) ->
@@ -2023,7 +2026,7 @@ send_existing_presences(ToJID,StateData) ->
 				  [{"affiliation",atom_to_list(FromAffiliation) },
 				   {"role", atom_to_list(FromRole)}]
 			  end,
-		      Packet = append_subtags(
+		      Packet = xml:append_subtags(
 				 Presence,
 				 [{xmlelement, "x", [{"xmlns", ?NS_MUC_USER}],
 				   [{xmlelement, "item", ItemAttrs, []}]}]),
@@ -2034,11 +2037,6 @@ send_existing_presences(ToJID,StateData) ->
 			Packet)
 	      end
       end, ?DICT:to_list(StateData#state.users)).
-
-
-append_subtags({xmlelement, Name, Attrs, SubTags1}, SubTags2) ->
-    {xmlelement, Name, Attrs, SubTags1 ++ SubTags2}.
-
 
 now_to_usec({MSec, Sec, USec}) ->
     (MSec*1000000 + Sec)*1000000 + USec.
@@ -2098,7 +2096,7 @@ send_nick_changing(JID, OldNick, StateData) ->
 		   [{xmlelement, "x", [{"xmlns", ?NS_MUC_USER}],
 		     [{xmlelement, "item", ItemAttrs1, []},
 		      {xmlelement, "status", [{"code", "303"}], []}]}]},
-	      Packet2 = append_subtags(
+	      Packet2 = xml:append_subtags(
 			  Presence,
 			  [{xmlelement, "x", [{"xmlns", ?NS_MUC_USER}],
 			    [{xmlelement, "item", ItemAttrs2, []}]}]),
@@ -2142,7 +2140,7 @@ lqueue_to_list(#lqueue{queue = Q1}) ->
     queue:to_list(Q1).
 
 
-add_message_to_history(FromNick, Packet, StateData) ->
+add_message_to_history(FromNick, From, Packet, StateData) ->
     HaveSubject = case xml:get_subtag(Packet, "subject") of
 		      false ->
 			  false;
@@ -2150,7 +2148,7 @@ add_message_to_history(FromNick, Packet, StateData) ->
 			  true
 		  end,
     TimeStamp = calendar:now_to_universal_time(now()),
-    TSPacket = append_subtags(Packet,
+    TSPacket = xml:append_subtags(Packet,
 			      [jlib:timestamp_to_xml(TimeStamp)]),
     SPacket = jlib:replace_from_to(
 		jlib:jid_replace_resource(StateData#state.jid, FromNick),
@@ -2494,8 +2492,19 @@ send_error_only_occupants(Packet, Lang, RoomJID, From) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Logging
-add_to_log(Type, Data, Headers) when is_record(Headers, headers) ->
-    add_to_log(Type, Data, headers_to_state(Headers));
+
+add_to_log(Type, Data, StateData)
+  when Type == roomconfig_change_disabledlogging ->
+    %% When logging is disabled, the config change message must be logged:
+   case handler_call(should_log, [], StateData) of
+	{result, true, _} ->
+	  mod_muc_log:add_to_log(
+      StateData#state.server_host, roomconfig_change, Data,
+      StateData#state.jid, StateData);
+    	_ ->
+	    ok
+    end;
+
 add_to_log(Type, Data, StateData) ->
     case handler_call(should_log, [], StateData) of
 	{result, true, _} ->

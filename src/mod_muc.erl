@@ -35,12 +35,13 @@
 	 start/2,
 	 stop/1,
 	 room_destroyed/4,
-	 store_room/5,
-	 restore_room/3,
-	 forget_room/3,
+	 store_room/6,
+	 restore_room/4,
+	 forget_room/4,
 	 create_room/5,
 	 create_room/6,
-	 process_iq_disco_items/4,
+	 start_room/2,
+	 process_iq_disco_items/6,
 	 can_use_nick/3]).
 
 %% gen_server callbacks
@@ -51,7 +52,7 @@
 -include("jlib.hrl").
 -include("mod_muc.hrl").
 
--record(muc_online_room, {name_host, pid}).
+
 -record(muc_registered, {us_host, nick}).
 
 -record(state, {host,
@@ -117,28 +118,32 @@ create_room(Host, Name, From, Nick, Opts) ->
     Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
     gen_server:call(Proc, {create, Name, From, Nick, Opts}).
 
+start_room(Host, Name)->
+    Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
+    gen_server:call(Proc, {start, Name}, 6000).
+
 get_storage(ServerHost) ->
     Proc = gen_mod:get_module_proc(ServerHost, ?PROCNAME),
     gen_server:call(Proc, get_storage).
     
-store_room(ServerHost,Host, Type, Name, Opts) ->
+store_room(ServerHost,Host, Type, Name, Opts, From) ->
     H = get_storage(ServerHost),
-    H:store_room(Host,ServerHost, Type, Name, Opts).
+    H:store_room(Host,ServerHost, Type, Name, Opts, From).
 
-restore_room(ServerHost,Host, Name) ->
+restore_room(ServerHost,Host, Name, From) ->
     H = get_storage(ServerHost),
-    H:restore_room(Host,ServerHost, Name).
+    H:restore_room(Host,ServerHost, Name, From).
 
-forget_room(ServerHost,Host, Name) ->
+forget_room(ServerHost,Host, Name, From) ->
     H = get_storage(ServerHost),
-    H:forget_room(Host,ServerHost, Name).
+    H:forget_room(Host,ServerHost, Name, From).
 
-process_iq_disco_items(Host, From, To, #iq{lang = Lang} = IQ) ->
+process_iq_disco_items(Host, ServerHost, From, To, #iq{lang = Lang} = IQ, Storage) ->
     Rsm = jlib:rsm_decode(IQ),
     Res = IQ#iq{type = result,
 		sub_el = [{xmlelement, "query",
 			   [{"xmlns", ?NS_DISCO_ITEMS}],
-			   iq_disco_items(Host, From, Lang, Rsm)}]},
+			   iq_disco_items(Host, ServerHost, From, Lang, Rsm, Storage)}]},
     ejabberd_router:route(To,
 			  From,
 			  jlib:iq_to_xml(Res)).
@@ -201,10 +206,6 @@ init([Host, Opts]) ->
     ejabberd_router:register_route(MyHost),
     case Storage:init(Host, MyHost, Opts) of
         ok -> 
-            load_permanent_rooms(MyHost, Host,
-	        		 {Access, AccessCreate, AccessAdmin, AccessPersistent},
-	        		 HistorySize,
-	        		 RoomShaper, Storage),
             {ok, #state{host = MyHost,
 	        	server_host = Host,
 	        	access = {Access, AccessCreate, AccessAdmin, AccessPersistent},
@@ -229,9 +230,52 @@ init([Host, Opts]) ->
 handle_call(stop, _From, State) ->
     {stop, normal, ok, State};
 
+handle_call({reload, Room, From}, _From, #state{storage=Storage, server_host=ServerHost, host=Host}=State) ->
+    case mnesia:dirty_read(muc_online_room, {Room, Host}) of
+		[] ->
+		  {reply, not_running, State};
+		[Pid] ->
+		    case Storage:restore_room(Host, ServerHost, Room, From) of
+		        {_Handler, Opts} -> 
+		            Result = gen_fsm:sync_send_all_state_event(Pid, {reload, Opts}, 500),
+		            {reply, Result, State};
+		        Error -> {reply, Error, State}
+		    end
+	end ;   
+    
+
+
 handle_call(get_storage,_From,#state{storage=Handler}=State )->
     {reply, Handler, State};
-
+    
+handle_call({start,Room, From},_From,#state{host = Host,
+		   server_host = ServerHost,
+		   access = Access,
+		   history_size = HistorySize,
+		   room_shaper = RoomShaper,
+		   storage = Storage } = State)->
+	case Storage:restore_room(Host, ServerHost, Room, From) of
+		 {Handler, Opts} ->
+		     ?DEBUG("MUC: Restoring room '~s'~n", [Room]),
+		     R = case mod_muc_room:start(
+		         Host,
+		         ServerHost,
+		         Access,
+		         Room,
+		         HistorySize,
+		         RoomShaper,
+		         Opts,
+		         Handler,
+		         Storage) of
+		        {ok, Pid }->
+		            register_room(Host, Room, Pid),
+		            {ok, Pid};
+		        Error -> Error
+		    end,
+             {reply, R, State};
+        Error -> {reply, Error, State}
+    end;
+        
 handle_call({create, Room, From, Nick, Opts}, FromPid, 
         #state{ default_handler = Handler } = State) ->
 	handle_call({create, Room, From, Nick, Opts, Handler}, FromPid, State);
@@ -264,7 +308,6 @@ handle_call({create, Room, From, Nick, Opts, Handler},
 %%                                      {stop, Reason, State}
 %% Description: Handling cast messages
 %%--------------------------------------------------------------------
-
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -373,10 +416,14 @@ do_route1(Host, ServerHost, Access, HistorySize, RoomShaper,
 			    case jlib:iq_query_info(Packet) of
 				#iq{type = get, xmlns = ?NS_DISCO_INFO = XMLNS,
  				    sub_el = _SubEl, lang = Lang} = IQ ->
+				    Info = ejabberd_hooks:run_fold(
+					     disco_info, ServerHost, [],
+					     [ServerHost, ?MODULE, "", ""]),
 				    Res = IQ#iq{type = result,
 						sub_el = [{xmlelement, "query",
 							   [{"xmlns", XMLNS}],
-							   iq_disco_info(Lang)}]},
+							   iq_disco_info(Lang)
+							   ++Info}]},
 				    ejabberd_router:route(To,
 							  From,
 							  jlib:iq_to_xml(Res));
@@ -384,7 +431,7 @@ do_route1(Host, ServerHost, Access, HistorySize, RoomShaper,
 				    xmlns = ?NS_DISCO_ITEMS} = IQ ->
 				    spawn(?MODULE,
 					  process_iq_disco_items,
-					  [Host, From, To, IQ]);
+					  [Host, ServerHost, From, To, IQ, Storage]);
 				#iq{type = get,
 				    xmlns = ?NS_REGISTER = XMLNS,
 				    lang = Lang,
@@ -475,29 +522,91 @@ do_route1(Host, ServerHost, Access, HistorySize, RoomShaper,
 		    end
 	    end;
 	_ ->
-
 	    case mnesia:dirty_read(muc_online_room, {Room, Host}) of
 		[] ->
 		    Type = xml:get_attr_s("type", Attrs),
 		    case {Name, Type} of
+		    {"iq", "get"}-> %% Special case for handling disco for non running rooms.
+		        case jlib:iq_query_info(Packet) of 
+				#iq{type = get, xmlns = ?NS_DISCO_INFO = XMLNS,
+ 				    sub_el = _SubEl, lang = Lang} = IQ ->
+ 				    case Storage:restore_room(Host, ServerHost, Room, From) of
+		                {RoomHandler, RoomOpts} ->
+ 				            IQRes = RoomHandler:get_disco_info({not_in_room, From}, Lang, RoomOpts, nil),
+ 				            Res = IQ#iq{type = result,
+							sub_el =
+							[{xmlelement, "query",
+							  [{"xmlns", XMLNS}],
+							  IQRes}]},
+					          ejabberd_router:route(
+					          To, From, jlib:iq_to_xml(Res));
+ 				        _E -> 
+ 				            Lang = xml:get_attr_s("xml:lang", Attrs),
+			                ErrText = "Room does not exist",
+			                Err = jlib:make_error_reply(
+				                Packet, ?ERRT_ITEM_NOT_FOUND(Lang, ErrText)),
+			                ejabberd_router:route(To, From, Err)
+			        end;
+			    E ->
+			        ?DEBUG("IQ : ~p",[E]),
+			        Lang = xml:get_attr_s("xml:lang", Attrs),
+			        ErrText = "Conference room does not exist",
+			        Err = jlib:make_error_reply(
+				     Packet, ?ERRT_ITEM_NOT_FOUND(Lang, ErrText)),
+			        ejabberd_router:route(To, From, Err)
+                end;
 			{"presence", ""} ->
-			    case acl:match_rule(ServerHost, AccessCreate, From) of
-				allow ->
-				    ?DEBUG("MUC: open new room '~s'~n", [Room]),
-				    {ok, Pid} = mod_muc_room:start(
-						  Host, ServerHost, Access,
-						  Room, HistorySize,
-						  RoomShaper, From,
-						  Nick, DefRoomOpts, Handler, Storage),
-				    register_room(Host, Room, Pid),
-				    mod_muc_room:route(Pid, From, Nick, Packet),
-				    ok;
-				_ ->
-				    Lang = xml:get_attr_s("xml:lang", Attrs),
-				    ErrText = "Room creation is denied by service policy",
-				    Err = jlib:make_error_reply(
-					    Packet, ?ERRT_FORBIDDEN(Lang, ErrText)),
-				    ejabberd_router:route(To, From, Err)
+			    case Storage:restore_room(Host, ServerHost, Room, From) of
+		        {RoomHandler, RoomOpts} ->
+		            ?DEBUG("MUC: Restoring room '~s'~n", [Room]),
+		            case mod_muc_room:start(
+				        Host,
+				        ServerHost,
+				        Access,
+				        Room,
+				        HistorySize,
+				        RoomShaper,
+				        RoomOpts,
+				        RoomHandler,
+				        Storage) of
+				    {ok, Pid} -> 
+		                register_room(Host, Room, Pid),
+		                mod_muc_room:route(Pid, From, Nick, Packet);
+		            {error, _Reason}->
+		                 Lang = xml:get_attr_s("xml:lang", Attrs),
+			             ErrText = "Unable to restore room",
+			             Err = jlib:make_error_reply(
+				            Packet, ?ERRT_INTERNAL_SERVER_ERROR(Lang, ErrText)),
+			             ejabberd_router:route(To, From, Err)
+			        end,
+			        ok;
+		        error ->
+			        case acl:match_rule(ServerHost, AccessCreate, From) of
+				    allow ->
+				        ?DEBUG("MUC: open new room '~s'~n", [Room]),
+				        case mod_muc_room:start(
+				        		  Host, ServerHost, Access,
+				        		  Room, HistorySize,
+				        		  RoomShaper, From,
+				        		  Nick, DefRoomOpts, Handler, Storage) of
+				        {ok, Pid} -> 
+		                    register_room(Host, Room, Pid),
+		                    mod_muc_room:route(Pid, From, Nick, Packet);
+		                {error, _Reason}->
+		                     Lang = xml:get_attr_s("xml:lang", Attrs),
+			                 ErrText = "Unable to restore room",
+			                 Err = jlib:make_error_reply(
+				                Packet, ?ERRT_INTERNAL_SERVER_ERROR(Lang, ErrText)),
+			                 ejabberd_router:route(To, From, Err)
+			            end,
+				        ok;
+				    _ ->
+				        Lang = xml:get_attr_s("xml:lang", Attrs),
+				        ErrText = "Room creation is denied by service policy",
+				        Err = jlib:make_error_reply(
+				    	    Packet, ?ERRT_FORBIDDEN(Lang, ErrText)),
+				        ejabberd_router:route(To, From, Err)
+			        end
 			    end;
 			_ ->
 			    Lang = xml:get_attr_s("xml:lang", Attrs),
@@ -514,29 +623,15 @@ do_route1(Host, ServerHost, Access, HistorySize, RoomShaper,
 	    end
     end.
 
+check_user_can_create_room(ServerHost, AccessCreate, From, RoomID) ->
+    case acl:match_rule(ServerHost, AccessCreate, From) of
+	allow ->
+	    (length(RoomID) =< gen_mod:get_module_opt(ServerHost, mod_muc,
+						      max_room_id, infinite));
+	_ ->
+	    false
+    end.
 
-
-
-load_permanent_rooms(Host, ServerHost, Access, HistorySize, RoomShaper, Storage) ->
-	lists:foreach(
-	  fun(#muc_room{type=Handler, name_host={Room, _Host}, opts=Opts}) ->
-	      case mnesia:dirty_read(muc_online_room, {Room, Host}) of
-		  [] ->
-		      {ok, Pid} = mod_muc_room:start(
-				    Host,
-				    ServerHost,
-				    Access,
-				    Room,
-				    HistorySize,
-				    RoomShaper,
-				    Opts,
-				    Handler,
-				    Storage),
-		      register_room(Host, Room, Pid);
-		  _ ->
-		      ok
-		  end
-	  end, Storage:fetch_all_rooms(ServerHost, Host)).
 
 register_room(Host, Room, Pid) ->
     F = fun() ->
@@ -559,10 +654,13 @@ iq_disco_info(Lang) ->
      {xmlelement, "feature", [{"var", ?NS_VCARD}], []}].
 
 
-iq_disco_items(Host, From, Lang, none) ->
-    lists:zf(fun(#muc_online_room{name_host = {Name, _Host}, pid = Pid}) ->
+iq_disco_items(Host, ServerHost, From, Lang, none, Storage) ->
+    OnlineRooms = get_vh_rooms(Host),
+    PersistentRooms = Storage:fetch_room_names(Host, ServerHost, From),
+    lists:zf(
+        fun(#muc_online_room{name_host = {Name, _Host}, pid = Pid}) ->
 		     case catch gen_fsm:sync_send_all_state_event(
-				  Pid, {get_disco_item, From, Lang}, 100) of
+				  Pid, {get_disco_item, From, Lang, nil}, 100) of
 			 {ok, {item, Desc}} ->
 			     flush(),
 			     {true,
@@ -571,10 +669,15 @@ iq_disco_items(Host, From, Lang, none) ->
 				{"name", Desc}], []}};
 			 _ ->
 			     false
-		     end
-	     end, get_vh_rooms(Host));
+		     end;
+		    ({Name, _Host})->
+		        {true,
+			      {xmlelement, "item",
+			       [{"jid", jlib:jid_to_string({Name, Host, ""})},
+				{"name", Name ++ "(0)"}], []}}
+	     end, OnlineRooms ++ PersistentRooms);
 
-iq_disco_items(Host, From, Lang, Rsm) ->
+iq_disco_items(Host,_ServerHost, From, Lang, Rsm, _Storage) ->
     {Rooms, RsmO} = get_vh_rooms(Host, Rsm),
     RsmOut = jlib:rsm_encode(RsmO),
     lists:zf(fun(#muc_online_room{name_host = {Name, _Host}, pid = Pid}) ->
@@ -591,6 +694,12 @@ iq_disco_items(Host, From, Lang, Rsm) ->
 		     end
 	     end, Rooms) ++ RsmOut.
 
+get_vh_rooms(Host) ->
+     mnesia:dirty_select(muc_online_room,
+			[{#muc_online_room{name_host = '$1', _ = '_'},
+			  [{'==', {element, 2, '$1'}, Host}],
+			  ['$_']}]).
+			  
 get_vh_rooms(Host, #rsm_in{max=M, direction=Direction, id=I, index=Index})->
     AllRooms = lists:sort(get_vh_rooms(Host)),
     Count = erlang:length(AllRooms),
@@ -719,7 +828,7 @@ iq_set_register_info(Host, From, Nick, Lang) ->
 	{atomic, ok} ->
 	    {result, []};
 	{atomic, false} ->
-	    ErrText = "Specified nickname is already registered",
+	    ErrText = "That nickname is registered by another person",
 	    {error, ?ERRT_CONFLICT(Lang, ErrText)};
 	_ ->
 	    {error, ?ERR_INTERNAL_SERVER_ERROR}
@@ -742,11 +851,11 @@ process_iq_register_set(Host, From, SubEl, Lang) ->
 				    {error, ?ERR_BAD_REQUEST};
 				_ ->
 				    case lists:keysearch("nick", 1, XData) of
-					false ->
+					{value, {_, [Nick]}} when Nick /= "" ->
+					    iq_set_register_info(Host, From, Nick, Lang);
+					_ ->
 					    ErrText = "You must fill in field \"Nickname\" in the form",
-					    {error, ?ERRT_NOT_ACCEPTABLE(Lang, ErrText)};
-					{value, {_, [Nick]}} ->
-					    iq_set_register_info(Host, From, Nick, Lang)
+					    {error, ?ERRT_NOT_ACCEPTABLE(Lang, ErrText)}
 				    end
 			    end;
 			_ ->
@@ -775,12 +884,6 @@ broadcast_service_message(Host, Msg) ->
 	      gen_fsm:send_all_state_event(
 		Pid, {service_message, Msg})
       end, get_vh_rooms(Host)).
-
-get_vh_rooms(Host) ->
-    mnesia:dirty_select(muc_online_room,
-			[{#muc_online_room{name_host = '$1', _ = '_'},
-			  [{'==', {element, 2, '$1'}, Host}],
-			  ['$_']}]).
 
 
 clean_table_from_bad_node(Node) ->
@@ -814,7 +917,6 @@ clean_table_from_bad_node(Node, Host) ->
 
 update_tables(Host) ->
     update_muc_registered_table(Host).
-
 
 
 

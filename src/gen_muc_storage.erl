@@ -5,10 +5,10 @@
 
 behaviour_info(callbacks) ->
     [{init, 3}, %Host, ServerHost, Opts
-    {store_room, 5}, %Host, ServerHost, Name, Type, Conf
-    {restore_room,3}, %Host, ServerHost, Name
-    {forget_room, 3}, % idem
-    {fetch_all_rooms, 2} %Host, ServerHost 
+    {store_room, 6}, %Host, ServerHost, Name, Type, Conf
+    {restore_room,4}, %Host, ServerHost, Name
+    {forget_room, 4}, % idem
+    {fetch_room_names, 3} %Host, ServerHost 
     ];
 behaviour_info(_Other) ->
     undefined.

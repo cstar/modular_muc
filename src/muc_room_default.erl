@@ -6,7 +6,28 @@
 -include("ejabberd.hrl").
 -include("jlib.hrl").
 -include("mod_muc_room.hrl"). 
-
+-record(config, {title = "",
+		 description = "",
+		 allow_change_subj = true,
+		 allow_query_users = true,
+		 allow_private_messages = true,
+		 allow_visitor_status = true,
+		 allow_visitor_nickchange = true,
+		 persistent = false,
+		 max_users = ?MAX_USERS_DEFAULT,
+		 public = true,
+		 public_list = true,
+		 moderated = true,
+		 captcha_protected = false,
+		 members_by_default = true,
+		 members_only = false,
+		 allow_user_invites = false,
+		 password_protected = false,
+		 password = "",
+		 anonymous = true,
+		 logging = false,
+		 custom = []
+		}).
 -export([process_groupchat_message/5,
          process_private_message/4,
          process_iq/7,
@@ -34,7 +55,11 @@
          handle_sync_event/3,
          make_opts/1,
          list_to_role/2,
-         list_to_affiliation/2]).
+         list_to_affiliation/2,
+         get_disco_info/4,
+         get_disco_item/4]).
+
+
 
 can_invite(From, FAffiliation, To, InviteEl, Lang, Headers)->
     case ((Headers#headers.config)#config.allow_user_invites
@@ -219,37 +244,9 @@ init(Opts, Headers)->
     
 handle_info(_Info, _Headers)->
     ok.
-handle_sync_event({get_disco_item, JID, Lang}, _From, Headers)->
-    FAffiliation = mod_muc_room:get_affiliation(JID, Headers),
-    FRole = mod_muc_room:get_role(JID, Headers),
-    Tail =
-	case ((Headers#headers.config)#config.public_list == true) orelse
-	    (FRole /= none) orelse
-	    (FAffiliation == admin) orelse
-	    (FAffiliation == owner) of
-	    true ->
-		Desc = case (Headers#headers.config)#config.public of
-			   true ->
-			       "";
-			   _ ->
-			       translate:translate(Lang, "private, ")
-		       end,
-		Len = ?DICT:fold(fun(_, _, Acc) -> Acc + 1 end, 0,
-				 Headers#headers.users),
-		" (" ++ Desc ++ integer_to_list(Len) ++ ")";
-	    _ ->
-		" (n/a)"
-	end,
-    Reply = case ((Headers#headers.config)#config.public == true) orelse
-		(FRole /= none) orelse
-		(FAffiliation == admin) orelse
-		(FAffiliation == owner) of
-		true ->
-		    {item, get_title(Headers) ++ Tail};
-		_ ->
-		    false
-	    end,
-    {ok, Reply, Headers}.
+
+handle_sync_event(Event, From, Headers)->
+    {error, not_implemented, Headers}.
     
 %%%%%
 %%%%% Stanza and event processing
@@ -343,29 +340,11 @@ check_allowed_persistent_change(XEl, Headers, From) ->
 process_iq(_UserInfo, _Aff, ?NS_DISCO_INFO, set, _Lang, _SubEl,Headers) ->
     {error, ?ERR_NOT_ALLOWED, Headers};
     
-process_iq({not_in_room, _From}, _FAffiliation, ?NS_DISCO_INFO=XMLNS, get=Type, Lang, SubEl, Headers)->
-    process_iq(#user{role=none}, none, XMLNS, Type, Lang, SubEl, Headers);
-process_iq(_UserInfo, _Aff, ?NS_DISCO_INFO, get, Lang, _SubEl, Headers) ->
+process_iq({not_in_room, From}, _FAffiliation, ?NS_DISCO_INFO=XMLNS, get=Type, Lang, SubEl, Headers)->
+    process_iq(#user{role=none, jid=From}, none, XMLNS, Type, Lang, SubEl, Headers);
+process_iq(UserInfo, _Aff, ?NS_DISCO_INFO, get, Lang, _SubEl, Headers) ->
     Config = Headers#headers.config,
-    {result, [{xmlelement, "identity",
-	       [{"category", "conference"},
-		{"type", "text"},
-		{"name", get_title(Headers)}], []},
-	      {xmlelement, "feature",
-	       [{"var", ?NS_MUC}], []},
-	      ?CONFIG_OPT_TO_FEATURE(Config#config.public,
-				     "muc_public", "muc_hidden"),
-	      ?CONFIG_OPT_TO_FEATURE(Config#config.persistent,
-				     "muc_persistent", "muc_temporary"),
-	      ?CONFIG_OPT_TO_FEATURE(Config#config.members_only,
-				     "muc_membersonly", "muc_open"),
-	      ?CONFIG_OPT_TO_FEATURE(Config#config.anonymous,
-				     "muc_semianonymous", "muc_nonanonymous"),
-	      ?CONFIG_OPT_TO_FEATURE(Config#config.moderated,
-				     "muc_moderated", "muc_unmoderated"),
-	      ?CONFIG_OPT_TO_FEATURE(Config#config.password_protected,
-				     "muc_passwordprotected", "muc_unsecured")
-	     ] ++ iq_disco_info_extras(Lang, Headers), Headers};
+    {result, get_disco_info(UserInfo, Lang, Config, Headers), Headers};
 
 process_iq(_UserInfo, _Aff, ?NS_DISCO_ITEMS, set, _Lang, _SubEl, _Headers) ->
     {error, ?ERR_NOT_ALLOWED};
@@ -420,8 +399,80 @@ process_presence(From, Packet, _Nick, _Lang, Headers)->
                     end,
    {allow, Stanza, Headers}.
 
-
-
+get_disco_item(User, Lang, Opts, nil)->
+    get_disco_item(User, Lang, Opts, set_opts(Opts, #headers{}));
+get_disco_item(#user{jid=Jid, role=FRole}, Lang, _Opts, Headers)->
+    Config = Headers#headers.config,
+    FAffiliation = mod_muc_room:get_affiliation(Jid, Headers),
+    Tail =
+	case (Config#config.public_list == true) orelse
+	    (FRole /= none) orelse
+	    (FAffiliation == admin) orelse
+	    (FAffiliation == owner) of
+	    true ->
+		Desc = case Config#config.public of
+			   true ->
+			       "";
+			   _ ->
+			       translate:translate(Lang, "private, ")
+		       end,
+		Len = if Headers /= nil ->
+		    ?DICT:fold(fun(_, _, Acc) -> Acc + 1 end, 0,
+				 Headers#headers.users);
+			true ->
+			    0
+		end,
+		" (" ++ Desc ++ integer_to_list(Len) ++ ")";
+	    _ ->
+		" (n/a)"
+	end,
+    Reply = case (Config#config.public == true) orelse
+		(FRole /= none) orelse
+		(FAffiliation == admin) orelse
+		(FAffiliation == owner) of
+		true ->
+		    {item, get_title(Headers) ++ Tail};
+		_ ->
+		    false
+	    end,
+    {ok, Reply, Headers}.
+    
+%get_disco_info({not_in_room, _From}, _Lang, #config{public=false})->
+%    {error, ?ERR_FORBIDDEN};
+get_disco_info(From, Lang, Opts, Headers)->
+    {Len, NewHeaders}  = if Headers == nil->
+        {0, set_opts(Opts, Headers)};
+        true -> 
+        {length(?DICT:to_list(Headers#headers.users)), Headers}
+    end,
+    Config = NewHeaders#headers.config,
+    RoomDescription = Config#config.description,
+    [{xmlelement, "identity",
+	       [{"category", "conference"},
+		{"type", "text"},
+		{"name", get_title(Headers)}], []},
+	      {xmlelement, "feature",
+	       [{"var", ?NS_MUC}], []},
+	      ?CONFIG_OPT_TO_FEATURE(Config#config.public,
+				     "muc_public", "muc_hidden"),
+	      ?CONFIG_OPT_TO_FEATURE(Config#config.persistent,
+				     "muc_persistent", "muc_temporary"),
+	      ?CONFIG_OPT_TO_FEATURE(Config#config.members_only,
+				     "muc_membersonly", "muc_open"),
+	      ?CONFIG_OPT_TO_FEATURE(Config#config.anonymous,
+				     "muc_semianonymous", "muc_nonanonymous"),
+	      ?CONFIG_OPT_TO_FEATURE(Config#config.moderated,
+				     "muc_moderated", "muc_unmoderated"),
+	      ?CONFIG_OPT_TO_FEATURE(Config#config.password_protected,
+				     "muc_passwordprotected", "muc_unsecured"),
+	     {xmlelement, "x", [{"xmlns", ?NS_XDATA}, {"type", "result"}],
+      [?RFIELDT("hidden", "FORM_TYPE",
+		"http://jabber.org/protocol/muc#roominfo"),
+       ?RFIELD("Room description", "muc#roominfo_description",
+	       RoomDescription),
+       ?RFIELD("Number of occupants", "muc#roominfo_occupants",
+	       integer_to_list(Len))
+      ]}].
 %%%%%%%%%%%
 %% UTILS function
 
@@ -1044,15 +1095,3 @@ check_captcha(Affiliation, From, Headers) ->
     end.
 
 
-
-iq_disco_info_extras(Lang, Headers) ->
-    Len = length(?DICT:to_list(Headers#headers.users)),
-    RoomDescription = (Headers#headers.config)#config.description,
-    [{xmlelement, "x", [{"xmlns", ?NS_XDATA}, {"type", "result"}],
-      [?RFIELDT("hidden", "FORM_TYPE",
-		"http://jabber.org/protocol/muc#roominfo"),
-       ?RFIELD("Room description", "muc#roominfo_description",
-	       RoomDescription),
-       ?RFIELD("Number of occupants", "muc#roominfo_occupants",
-	       integer_to_list(Len))
-      ]}].

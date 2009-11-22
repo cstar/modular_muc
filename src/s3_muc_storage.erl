@@ -15,7 +15,7 @@
          store_room/5,
          restore_room/3,
          forget_room/3,
-         fetch_all_rooms/2
+         fetch_room_names/2
          ]).
 
 
@@ -23,16 +23,22 @@
 % @spec (Host, ServerHost, Opts)-> ok | {error, Reason}
 % @doc called by {@link mod_muc:init/2}.
 %
-init(_Host, _ServerHost, Opts)->
+init(_Host, ServerHost, Opts)->
     ?DEBUG("init S3", []),
-    case gen_mod:get_opt(s3_bucket, Opts, none) of
-        none -> {error, "s3_bucket option not set in ejabberd.cfg for mod_muc"};
-        B ->
-            ets:new(s3_muc, [set, named_table, public]),
-            ets:insert(s3_muc, {bucket, B}),
-            s3:start(),
-            ok
-    end.
+    Bucket = gen_mod:get_opt(s3_bucket, Opts, ServerHost),
+    s3:start(),
+    {ok, Buckets} = s3:list_buckets(),
+    case lists:member(Bucket, Buckets) of 
+        false ->
+            s3:create_bucket(Bucket),
+            ?INFO_MSG("S3 bucket ~s created", [Bucket]);
+        true -> ok
+    end,
+    ets:new(s3_muc, [set, named_table, public]),
+    ets:insert(s3_muc, {bucket, Bucket}),
+    s3:start(),
+    ok.
+    
 % @spec (Host,ServerHost, Name, Type, Opts)-> ok | {error, Reason}
 % @doc Stores room.
 % Called on configuration change when MUC is persistent.  
@@ -60,26 +66,24 @@ forget_room(Host, ServerHost, Name) ->
     ?DEBUG("forget_room muc_s3", []),
      s3:delete_object(get_bucket(), build_key(Host, Name)).
 
-% @spec (Host,ServerHost)-> [MucRoom]
-%   MucRoom = #muc_room{}
+% @spec (Host,ServerHost)-> [{Name, Host}]
 % @doc Used for disco
-fetch_all_rooms(Host, ServerHost)->
-    ?DEBUG("fetch_all_rooms muc_s3", []),
-    case s3:get_objects(get_bucket(),[{prefix,build_key(Host,"")}] ) of
-	{'EXIT', Reason} ->
+% @deprecated
+    
+fetch_room_names(Host, ServerHost)->
+    case catch s3:list_objects(get_bucket(),[{prefix,build_key(Host,"")}] ) of
+    {'EXIT', Reason} ->
 	    ?ERROR_MSG("~p", [Reason]),
 	    [];
 	{error, timeout} ->
 	    ?ERROR_MSG("Timeout on S3", []),
 	    [];
-	Rs->
-	    lists:map(fun({Key, Value, Headers})->
-	        {Type, Opts} = binary_to_term(list_to_binary(Value)),
-	        #muc_room{name_host = split_key(Key), opts=Opts, type=Type}
-	    end, Rs)
+	{ok, Rooms} ->
+	    lists:map(fun({object_info,{"Key",Key},_,_,_})->
+            split_key(Key)
+	    end, Rooms)
 	end.
-    
-    
+	
 %%%INTERNAL
 get_bucket()->
      [{bucket, Bucket}] = ets:lookup(s3_muc, bucket),

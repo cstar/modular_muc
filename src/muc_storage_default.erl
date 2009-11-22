@@ -9,10 +9,10 @@
 -include("jlib.hrl").
 -include("mod_muc.hrl"). 
 -export([init/3,
-         store_room/5,
-         restore_room/3,
-         forget_room/3,
-         fetch_all_rooms/2
+         store_room/6,
+         restore_room/4,
+         forget_room/4,
+         fetch_room_names/3
          ]).
          
 init(Host, _ServerHost, _Opts)->
@@ -23,7 +23,7 @@ init(Host, _ServerHost, _Opts)->
     update_muc_room_table(Host),
     ok.
     
-store_room(Host, _ServerHost,Type, Name, Opts)->
+store_room(Host, _ServerHost,Type, Name, Opts, _From)->
     ?DEBUG("store_room muc_default", []),
     F = fun() ->
 		mnesia:write(#muc_room{name_host = {Name, Host}, type=Type,
@@ -31,7 +31,7 @@ store_room(Host, _ServerHost,Type, Name, Opts)->
 	end,
     mnesia:transaction(F).
 
-restore_room(Host,_ServerHost, Name)->
+restore_room(Host,_ServerHost, Name, _From)->
     ?DEBUG("restore_room muc_default", []),
    case catch mnesia:dirty_read(muc_room, {Name, Host}) of
 	[#muc_room{opts = Opts, type=Type}] ->
@@ -40,14 +40,15 @@ restore_room(Host,_ServerHost, Name)->
 	    error
     end.
 
-forget_room(Host, _ServerHost, Name) ->
+forget_room(Host, _ServerHost, Name, _From) ->
     ?DEBUG("forget_room muc_default", []),
     F = fun() ->
 		mnesia:delete({muc_room, {Name, Host}})
 	end,
     mnesia:transaction(F).
-
-fetch_all_rooms( Host, _ServerHost)->
+    
+    
+fetch_room_names( Host, _ServerHost, _From)->
     ?DEBUG("fetch_all_rooms muc_default", []),
     case catch mnesia:dirty_select(
 		 muc_room, [{#muc_room{name_host = {'_', Host}, _ = '_'},
@@ -57,11 +58,11 @@ fetch_all_rooms( Host, _ServerHost)->
 	        ?ERROR_MSG("~p", [Reason]),
 	        [];
 	    Rs ->
-	        ?DEBUG("~p", [Rs]),
-	        Rs
+	        lists:map(fun(#muc_room{name_host = NameHost})->
+                NameHost
+	        end, Rs)
     end.
     
-
     
 %%%INTERNAL
 update_muc_room_table(Host) ->

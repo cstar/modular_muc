@@ -20,5 +20,11 @@ TODO :
 - remove build warnings.
 - refine API
 
+disco : 
+- write specific hook
+
+    disco_info(From, Affiliation, Config)->{ok, {item}}
+
+
 LICENSE :
 GPL as mod_muc on which the code is based on.
